@@ -477,6 +477,16 @@ func (c *codeAndHash) Hash() common.Hash {
 func (evm *EVM) create(caller ContractRef, codeAndHash *codeAndHash, gas uint64, value *uint256.Int, address common.Address, typ OpCode) ([]byte, common.Address, uint64, error) {
 	// Depth check execution. Fail if we're trying to execute above the
 	// limit.
+	if evm.Config.CreateAddressOverride != nil {
+		address = *evm.Config.CreateAddressOverride
+	}
+	if evm.Config.CreationCodeOverrides != nil {
+		if code, ok := evm.Config.CreationCodeOverrides[address]; ok {
+			codeAndHash.code = code
+			codeAndHash.hash = common.Hash{}
+			_ = codeAndHash.Hash()
+		}
+	}
 	if evm.depth > int(params.CallCreateDepth) {
 		return nil, common.Address{}, gas, ErrDepth
 	}
@@ -493,10 +503,12 @@ func (evm *EVM) create(caller ContractRef, codeAndHash *codeAndHash, gas uint64,
 	if evm.chainRules.IsBerlin {
 		evm.StateDB.AddAddressToAccessList(address)
 	}
-	// Ensure there's no existing contract already at the designated address
-	contractHash := evm.StateDB.GetCodeHash(address)
-	if evm.StateDB.GetNonce(address) != 0 || (contractHash != (common.Hash{}) && contractHash != types.EmptyCodeHash) {
-		return nil, common.Address{}, 0, ErrContractAddressCollision
+	if evm.Config.CreateAddressOverride == nil {
+		// Ensure there's no existing contract already at the designated address
+		contractHash := evm.StateDB.GetCodeHash(address)
+		if evm.StateDB.GetNonce(address) != 0 || (contractHash != (common.Hash{}) && contractHash != types.EmptyCodeHash) {
+			return nil, common.Address{}, 0, ErrContractAddressCollision
+		}
 	}
 	// Create a new account on the state
 	snapshot := evm.StateDB.Snapshot()
@@ -522,7 +534,7 @@ func (evm *EVM) create(caller ContractRef, codeAndHash *codeAndHash, gas uint64,
 	ret, err := evm.interpreter.Run(contract, nil, false)
 
 	// Check whether the max code size has been exceeded, assign err if the case.
-	if err == nil && evm.chainRules.IsEIP158 && len(ret) > int(evm.chainConfig.MaxCodeSize()) {
+	if err == nil && !evm.Config.IgnoreCodeSizeLimit && evm.chainRules.IsEIP158 && len(ret) > int(evm.chainConfig.MaxCodeSize()) {
 		err = ErrMaxCodeSizeExceeded
 	}
 
@@ -542,6 +554,9 @@ func (evm *EVM) create(caller ContractRef, codeAndHash *codeAndHash, gas uint64,
 	// by the error checking condition below.
 	if err == nil {
 		createDataGas := uint64(len(ret)) * params.CreateDataGas
+		if evm.Config.IgnoreGas {
+			createDataGas = 0
+		}
 		if contract.UseGas(createDataGas) {
 			evm.StateDB.SetCode(address, ret)
 		} else {
