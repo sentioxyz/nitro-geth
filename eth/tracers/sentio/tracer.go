@@ -331,7 +331,7 @@ func (t *sentioTracer) CaptureState(pc uint64, op vm.OpCode, gas, cost uint64, s
 		call.To = &to
 		call.Value = (*hexutil.Big)(scope.Stack.Back(2).ToBig())
 
-		v := call.Value.ToInt()
+		v := uint256.MustFromBig(call.Value.ToInt())
 		if v.BitLen() != 0 && !t.env.Context.CanTransfer(t.env.StateDB, from, v) {
 			if call.Error == "" {
 				call.Error = "insufficient funds for transfer"
