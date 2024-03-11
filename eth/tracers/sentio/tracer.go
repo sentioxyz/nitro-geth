@@ -165,7 +165,7 @@ func (t *sentioTracer) CaptureStart(env *vm.EVM, from common.Address, to common.
 		t.receipt.TransactionIndex = uint(ibs.TxIndex())
 	}
 
-	rules := env.ChainConfig().Rules(env.Context.BlockNumber, env.Context.Random != nil, env.Context.Time)
+	rules := env.ChainConfig().Rules(env.Context.BlockNumber, env.Context.Random != nil, env.Context.Time, env.Context.ArbOSVersion)
 	t.activePrecompiles = vm.ActivePrecompiles(rules)
 
 	root := Trace{
@@ -332,7 +332,7 @@ func (t *sentioTracer) CaptureState(pc uint64, op vm.OpCode, gas, cost uint64, s
 		call.Value = (*hexutil.Big)(scope.Stack.Back(2).ToBig())
 
 		v := uint256.MustFromBig(call.Value.ToInt())
-		if v.BitLen() != 0 && !t.env.Context.CanTransfer(t.env.StateDB, from, v) {
+		if v.BitLen() != 0 && !t.env.Context.CanTransfer(t.env.StateDB, from, call.Value.ToInt()) {
 			if call.Error == "" {
 				call.Error = "insufficient funds for transfer"
 			}
@@ -674,3 +674,8 @@ func copyStack(s *vm.Stack, copySize int) []uint256.Int {
 	}
 	return res
 }
+
+func (*sentioTracer) CaptureArbitrumTransfer(env *vm.EVM, from, to *common.Address, value *big.Int, before bool, purpose string) {
+}
+func (*sentioTracer) CaptureArbitrumStorageGet(key common.Hash, depth int, before bool)        {}
+func (*sentioTracer) CaptureArbitrumStorageSet(key, value common.Hash, depth int, before bool) {}

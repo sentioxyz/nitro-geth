@@ -213,7 +213,7 @@ func (t *sentioPrestateTracer) CaptureTxEnd(restGas uint64) {
 		}
 		modified := false
 		postAccount := &account{Storage: make(map[common.Hash]common.Hash)}
-		newBalance := t.env.StateDB.GetBalance(addr).ToBig()
+		newBalance := t.env.StateDB.GetBalance(addr)
 		newNonce := t.env.StateDB.GetNonce(addr)
 		newCode := t.env.StateDB.GetCode(addr)
 		postAccount.CodeAddress = state.CodeAddress
@@ -301,7 +301,7 @@ func (t *sentioPrestateTracer) lookupAccount(addr common.Address) {
 	}
 
 	t.pre[addr] = &account{
-		Balance:           t.env.StateDB.GetBalance(addr).ToBig(),
+		Balance:           t.env.StateDB.GetBalance(addr),
 		Nonce:             t.env.StateDB.GetNonce(addr),
 		Code:              t.env.StateDB.GetCode(addr),
 		Storage:           make(map[common.Hash]common.Hash),
@@ -321,3 +321,9 @@ func (t *sentioPrestateTracer) lookupStorage(addr common.Address, key common.Has
 }
 
 func (*sentioPrestateTracer) CapturePreimage(pc uint64, hash common.Hash, preimage []byte) {}
+
+func (*sentioPrestateTracer) CaptureArbitrumTransfer(env *vm.EVM, from, to *common.Address, value *big.Int, before bool, purpose string) {
+}
+func (*sentioPrestateTracer) CaptureArbitrumStorageGet(key common.Hash, depth int, before bool) {}
+func (*sentioPrestateTracer) CaptureArbitrumStorageSet(key, value common.Hash, depth int, before bool) {
+}
