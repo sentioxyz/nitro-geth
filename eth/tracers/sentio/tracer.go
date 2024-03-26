@@ -497,7 +497,8 @@ func (t *sentioTracer) CaptureState(pc uint64, op vm.OpCode, gas, cost uint64, s
 		//data := copyMemory(logOffset, logSize)
 
 		trace := mergeBase(Trace{
-			Error: "execution reverted",
+			Output: output,
+			Error:  "execution reverted",
 		})
 		if unpacked, err := abi.UnpackRevert(output); err == nil {
 			trace.Revertal = unpacked
