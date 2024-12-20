@@ -163,13 +163,18 @@ type TraceConfig struct {
 	// Config specific to given tracer. Note struct logger
 	// config are historically embedded in main object.
 	TracerConfig json.RawMessage
+
+	StateOverrides        *override.StateOverride
+	IgnoreGas             *bool
+	IgnoreCodeSizeLimit   *bool
+	CreationCodeOverrides map[common.Address]hexutil.Bytes
+	CreateAddressOverride *common.Address
 }
 
 // TraceCallConfig is the config for traceCall API. It holds one more
 // field to override the state for tracing.
 type TraceCallConfig struct {
 	TraceConfig
-	StateOverrides *override.StateOverride
 	BlockOverrides *override.BlockOverrides
 	TxIndex        *hexutil.Uint
 }
@@ -914,6 +919,15 @@ func (api *API) TraceTransaction(ctx context.Context, hash common.Hash, config *
 		TxIndex:     int(index),
 		TxHash:      hash,
 	}
+
+	if config != nil {
+		rules := api.backend.ChainConfig().Rules(vmctx.BlockNumber, vmctx.Random != nil, vmctx.Time, vmctx.ArbOSVersion)
+
+		precompiles := vm.ActivePrecompiledContracts(rules)
+		if err := config.StateOverrides.Apply(statedb, precompiles); err != nil {
+			return nil, err
+		}
+	}
 	return api.traceTx(ctx, tx, msg, txctx, vmctx, statedb, config, nil)
 }
 
@@ -1044,8 +1058,22 @@ func (api *API) traceTx(ctx context.Context, tx *types.Transaction, message *cor
 			return nil, err
 		}
 	}
+	vmConfig := vm.Config{
+		Tracer:    tracer.Hooks,
+		NoBaseFee: true,
+	}
+	if config != nil {
+		vmConfig.CreateAddressOverride = config.CreateAddressOverride
+		vmConfig.CreationCodeOverrides = config.CreationCodeOverrides
+		if config.IgnoreCodeSizeLimit != nil {
+			vmConfig.IgnoreCodeSizeLimit = *config.IgnoreCodeSizeLimit
+		}
+		if config.IgnoreGas != nil {
+			vmConfig.IgnoreGas = *config.IgnoreGas
+		}
+	}
 	tracingStateDB := state.NewHookedState(statedb, tracer.Hooks)
-	evm := vm.NewEVM(vmctx, tracingStateDB, api.backend.ChainConfig(), vm.Config{Tracer: tracer.Hooks, NoBaseFee: true})
+	evm := vm.NewEVM(vmctx, tracingStateDB, api.backend.ChainConfig(), vmConfig)
 	if precompiles != nil {
 		evm.SetPrecompiles(precompiles)
 	}
@@ -1138,4 +1166,118 @@ func overrideConfig(original *params.ChainConfig, override *params.ChainConfig) 
 	}
 
 	return copy, canon
+}
+
+type Bundle struct {
+	Transactions  []*ethapi.TransactionArgs `json:"transactions"`
+	BlockOverride override.BlockOverrides   `json:"blockOverride"`
+}
+
+type StateContext struct {
+	BlockNumber      *rpc.BlockNumberOrHash `json:"blockNumber"`
+	TransactionIndex int                    `json:"transactionIndex"`
+}
+
+type FailedTrace struct {
+	Failed string `json:"failed,omitempty"`
+}
+
+func (api *API) TraceCallMany(ctx context.Context, bundles []*Bundle, simulateContext *StateContext, config *TraceCallConfig) (interface{}, error) {
+	if len(bundles) == 0 {
+		return nil, errors.New("empty bundles")
+	}
+	var result []interface{}
+	for _, bundle := range bundles {
+		r, err := api.traceBundle(ctx, bundle, simulateContext, config)
+		if err != nil {
+			if r != nil {
+				// return partial results
+				r = append(r, &FailedTrace{Failed: err.Error()})
+				result = append(result, r)
+				return result, nil
+			}
+			return nil, err
+		}
+		result = append(result, r)
+	}
+	return result, nil
+}
+
+func (api *API) traceBundle(ctx context.Context, bundle *Bundle, simulateContext *StateContext, config *TraceCallConfig) ([]interface{}, error) {
+	var result []interface{}
+	// Try to retrieve the specified block
+	var (
+		err         error
+		block       *types.Block
+		precompiles vm.PrecompiledContracts
+	)
+	if hash, ok := simulateContext.BlockNumber.Hash(); ok {
+		block, err = api.blockByHash(ctx, hash)
+	} else if number, ok := simulateContext.BlockNumber.Number(); ok {
+		if number == rpc.PendingBlockNumber {
+			// We don't have access to the miner here. For tracing 'future' transactions,
+			// it can be done with block- and state-overrides instead, which offers
+			// more flexibility and stability than trying to trace on 'pending', since
+			// the contents of 'pending' is unstable and probably not a true representation
+			// of what the next actual block is likely to contain.
+			return nil, errors.New("tracing on top of pending is not supported")
+		}
+		block, err = api.blockByNumber(ctx, number)
+	} else {
+		return nil, errors.New("invalid arguments; neither block nor hash specified")
+	}
+	if err != nil {
+		return nil, err
+	}
+	// try to recompute the state
+	reexec := defaultTraceReexec
+	if config != nil && config.Reexec != nil {
+		reexec = *config.Reexec
+	}
+	is158 := api.backend.ChainConfig().IsEIP158(block.Number())
+
+	if err != nil {
+		return nil, err
+	}
+	_, vmctx, statedb, release, err := api.backend.StateAtTransaction(ctx, block, simulateContext.TransactionIndex, reexec)
+	if err != nil {
+		return nil, err
+	}
+	defer release()
+
+	// Apply the customization rules if required.
+	if config != nil {
+		rules := api.backend.ChainConfig().Rules(vmctx.BlockNumber, vmctx.Random != nil, vmctx.Time, vmctx.ArbOSVersion)
+
+		precompiles = vm.ActivePrecompiledContracts(rules)
+		if err := config.StateOverrides.Apply(statedb, precompiles); err != nil {
+			return nil, err
+		}
+		config.BlockOverrides.Apply(&vmctx)
+	}
+	// Execute the trace
+	for idx, args := range bundle.Transactions {
+		if err := args.CallDefaults(api.backend.RPCGasCap(), vmctx.BaseFee, api.backend.ChainConfig().ChainID); err != nil {
+			return nil, err
+		}
+		msg := args.ToMessage(block.BaseFee(), api.backend.RPCGasCap(), block.Header(), statedb, core.NewMessageEthcallContext(), true)
+		tx := args.ToTransaction(types.LegacyTxType)
+
+		var traceConfig *TraceConfig
+		if config != nil {
+			traceConfig = &config.TraceConfig
+		}
+		txctx := &Context{
+			BlockHash:   block.Hash(),
+			BlockNumber: block.Number(),
+			TxIndex:     simulateContext.TransactionIndex + idx,
+		}
+		r, err := api.traceTx(ctx, tx, msg, txctx, vmctx, statedb, traceConfig, precompiles)
+		if err != nil {
+			return result, err
+		}
+		result = append(result, r)
+		statedb.Finalise(is158)
+	}
+	return result, nil
 }
