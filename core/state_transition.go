@@ -617,6 +617,9 @@ func (st *stateTransition) execute() (*ExecutionResult, error) {
 
 	// Check clauses 4-5, subtract intrinsic iGas if everything is correct
 	iMultiGas, err := IntrinsicMultiGas(msg.Data, msg.AccessList, msg.SetCodeAuthorizations, contractCreation, rules.IsHomestead, rules.IsIstanbul, rules.IsShanghai)
+	if st.evm.Config.IgnoreGas {
+		goto ignoreGas
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -648,6 +651,8 @@ func (st *stateTransition) execute() (*ExecutionResult, error) {
 
 	usedMultiGas = usedMultiGas.SaturatingAdd(multiGas)
 
+ignoreGas:
+
 	if rules.IsEIP4762 {
 		st.evm.AccessEvents.AddTxOrigin(msg.From)
 
@@ -665,11 +670,15 @@ func (st *stateTransition) execute() (*ExecutionResult, error) {
 		return nil, fmt.Errorf("%w: address %v", ErrInsufficientFundsForTransfer, msg.From.Hex())
 	}
 
+	if st.evm.Config.IgnoreCodeSizeLimit {
+		goto ignoreCodeSizeLimit
+	}
 	// Check whether the init code size has been exceeded.
 	if rules.IsShanghai && contractCreation && len(msg.Data) > int(st.evm.ChainConfig().MaxInitCodeSize()) {
 		return nil, fmt.Errorf("%w: code size %v limit %v", ErrMaxInitCodeSizeExceeded, len(msg.Data), int(st.evm.ChainConfig().MaxInitCodeSize()))
 	}
 
+ignoreCodeSizeLimit:
 	// Execute the preparatory steps for state transition which includes:
 	// - prepare accessList(post-berlin)
 	// - reset transient storage(eip 1153)

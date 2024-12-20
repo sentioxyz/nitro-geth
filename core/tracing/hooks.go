@@ -70,6 +70,8 @@ type VMContext struct {
 
 	// Arbitrum information
 	ArbOSVersion uint64
+
+	GasPrice *big.Int
 }
 
 // BlockEvent is emitted upon tracing an incoming block.
