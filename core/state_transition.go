@@ -617,13 +617,13 @@ func (st *stateTransition) execute() (*ExecutionResult, error) {
 
 	// Check clauses 4-5, subtract intrinsic iGas if everything is correct
 	iMultiGas, err := IntrinsicMultiGas(msg.Data, msg.AccessList, msg.SetCodeAuthorizations, contractCreation, rules.IsHomestead, rules.IsIstanbul, rules.IsShanghai)
+	iGas := iMultiGas.SingleGas()
 	if st.evm.Config.IgnoreGas {
 		goto ignoreGas
 	}
 	if err != nil {
 		return nil, err
 	}
-	iGas := iMultiGas.SingleGas()
 	if st.gasRemaining < iGas {
 		return nil, fmt.Errorf("%w: have %d, want %d", ErrIntrinsicGas, st.gasRemaining, iGas)
 	}
@@ -641,6 +641,8 @@ func (st *stateTransition) execute() (*ExecutionResult, error) {
 		t.OnGasChange(st.gasRemaining, st.gasRemaining-iGas, tracing.GasChangeTxIntrinsicGas)
 	}
 	st.gasRemaining -= iGas
+ignoreGas:
+
 	usedMultiGas = usedMultiGas.SaturatingAdd(iMultiGas)
 
 	tipAmount := big.NewInt(0)
@@ -650,8 +652,6 @@ func (st *stateTransition) execute() (*ExecutionResult, error) {
 	}
 
 	usedMultiGas = usedMultiGas.SaturatingAdd(multiGas)
-
-ignoreGas:
 
 	if rules.IsEIP4762 {
 		st.evm.AccessEvents.AddTxOrigin(msg.From)
