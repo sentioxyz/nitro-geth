@@ -215,8 +215,8 @@ func NewEVM(blockCtx BlockContext, statedb StateDB, chainConfig *params.ChainCon
 				continue
 			}
 			op.constantGas = 0
-			op.dynamicGas = func(*EVM, *Contract, *Stack, *Memory, uint64) (uint64, error) {
-				return 0, nil
+			op.dynamicGas = func(*EVM, *Contract, *Stack, *Memory, uint64) (multigas.MultiGas, error) {
+				return multigas.ZeroGas(), nil
 			}
 		}
 	}
