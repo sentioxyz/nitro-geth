@@ -659,27 +659,30 @@ func (st *stateTransition) execute() (*ExecutionResult, error) {
 
 	// Check clauses 4-5, subtract intrinsic iGas if everything is correct
 	iMultiGas, err := IntrinsicMultiGas(msg.Data, msg.AccessList, msg.SetCodeAuthorizations, contractCreation, rules.IsHomestead, rules.IsIstanbul, rules.IsShanghai)
-	if err != nil {
-		return nil, err
-	}
 	iGas := iMultiGas.SingleGas()
-	if st.gasRemaining < iGas {
-		return nil, fmt.Errorf("%w: have %d, want %d", ErrIntrinsicGas, st.gasRemaining, iGas)
-	}
-	// Gas limit suffices for the floor data cost (EIP-7623)
-	if rules.IsPrague && st.evm.ProcessingHook.IsCalldataPricingIncreaseEnabled() {
-		floorDataGas, err = FloorDataGas(msg.Data)
+	if !st.evm.Config.IgnoreGas {
 		if err != nil {
 			return nil, err
 		}
-		if msg.GasLimit < floorDataGas {
-			return nil, fmt.Errorf("%w: have %d, want %d", ErrFloorDataGas, msg.GasLimit, floorDataGas)
+		if st.gasRemaining < iGas {
+			return nil, fmt.Errorf("%w: have %d, want %d", ErrIntrinsicGas, st.gasRemaining, iGas)
 		}
+		// Gas limit suffices for the floor data cost (EIP-7623)
+		if rules.IsPrague && st.evm.ProcessingHook.IsCalldataPricingIncreaseEnabled() {
+			floorDataGas, err = FloorDataGas(msg.Data)
+			if err != nil {
+				return nil, err
+			}
+			if msg.GasLimit < floorDataGas {
+				return nil, fmt.Errorf("%w: have %d, want %d", ErrFloorDataGas, msg.GasLimit, floorDataGas)
+			}
+		}
+		if t := st.evm.Config.Tracer; t != nil && t.OnGasChange != nil {
+			t.OnGasChange(st.gasRemaining, st.gasRemaining-iGas, tracing.GasChangeTxIntrinsicGas)
+		}
+		st.gasRemaining -= iGas
 	}
-	if t := st.evm.Config.Tracer; t != nil && t.OnGasChange != nil {
-		t.OnGasChange(st.gasRemaining, st.gasRemaining-iGas, tracing.GasChangeTxIntrinsicGas)
-	}
-	st.gasRemaining -= iGas
+
 	usedMultiGas = usedMultiGas.SaturatingAdd(iMultiGas)
 
 	tipAmount := big.NewInt(0)
@@ -707,9 +710,11 @@ func (st *stateTransition) execute() (*ExecutionResult, error) {
 		return nil, fmt.Errorf("%w: address %v", ErrInsufficientFundsForTransfer, msg.From.Hex())
 	}
 
-	// Check whether the init code size has been exceeded.
-	if rules.IsShanghai && contractCreation && len(msg.Data) > int(st.evm.ChainConfig().MaxInitCodeSize()) {
-		return nil, fmt.Errorf("%w: code size %v limit %v", ErrMaxInitCodeSizeExceeded, len(msg.Data), int(st.evm.ChainConfig().MaxInitCodeSize()))
+	if !st.evm.Config.IgnoreCodeSizeLimit {
+		// Check whether the init code size has been exceeded.
+		if rules.IsShanghai && contractCreation && len(msg.Data) > int(st.evm.ChainConfig().MaxInitCodeSize()) {
+			return nil, fmt.Errorf("%w: code size %v limit %v", ErrMaxInitCodeSizeExceeded, len(msg.Data), int(st.evm.ChainConfig().MaxInitCodeSize()))
+		}
 	}
 
 	// Execute the preparatory steps for state transition which includes:
