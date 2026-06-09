@@ -371,6 +371,7 @@ func (c *Client) CallContext(ctx context.Context, result interface{}, method str
 	resp := batchresp[0]
 	switch {
 	case resp.Error != nil:
+		_ = json.Unmarshal(resp.Result, result)
 		return resp.Error
 	case len(resp.Result) == 0:
 		return ErrNoResult
