@@ -17,6 +17,7 @@
 package logger
 
 import (
+	"bytes"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -47,6 +48,8 @@ type Config struct {
 	DisableStorage   bool // disable storage capture
 	EnableReturnData bool // enable return data capture
 	Limit            int  // maximum size of output, but zero means unlimited
+
+	MemoryCompressionWindow int
 	// Chain overrides, can be used to execute a trace using future fork rules
 	Overrides *params.ChainConfig `json:"overrides,omitempty"`
 }
@@ -68,6 +71,8 @@ type StructLog struct {
 	Depth         int                         `json:"depth"`
 	RefundCounter uint64                      `json:"refund"`
 	Err           error                       `json:"-"`
+
+	Meq *int `json:"meq,omitempty"`
 }
 
 // overrides for gencodec
@@ -79,6 +84,8 @@ type structLogMarshaling struct {
 	Stack       []hexutil.U256
 	OpName      string `json:"opName"`          // adds call to OpName() in MarshalJSON
 	ErrorString string `json:"error,omitempty"` // adds call to ErrorString() in MarshalJSON
+
+	Meq *int `json:"meq,omitempty"`
 }
 
 // OpName formats the operand name in a human-readable format.
@@ -216,6 +223,10 @@ type StructLogger struct {
 	err     error
 	usedGas uint64
 
+	prevMem       [][]byte
+	prevMemWindow int
+	prevMemIdx    int
+
 	writer     io.Writer         // If set, the logger will stream instead of store logs
 	logs       []json.RawMessage // buffer of json-encoded logs
 	resultSize int
@@ -240,6 +251,9 @@ func NewStructLogger(cfg *Config) *StructLogger {
 	}
 	if cfg != nil {
 		logger.cfg = *cfg
+		logger.prevMemWindow = cfg.MemoryCompressionWindow
+		logger.prevMemIdx = 0
+		logger.prevMem = make([][]byte, cfg.MemoryCompressionWindow)
 	}
 	return logger
 }
@@ -278,9 +292,38 @@ func (l *StructLogger) OnOpcode(pc uint64, opcode byte, gas, cost uint64, scope 
 		stack        = scope.StackData()
 		stackLen     = len(stack)
 	)
-	log := StructLog{pc, op, gas, cost, nil, len(memory), nil, nil, nil, depth, l.env.StateDB.GetRefund(), err}
+	log := StructLog{pc, op, gas, cost, nil, len(memory), nil, nil, nil, depth, l.env.StateDB.GetRefund(), err, nil}
 	if l.cfg.EnableMemory {
 		log.Memory = memory
+		var mem []byte
+		mem = make([]byte, len(memory))
+		copy(mem, memory)
+
+		foundEq := false
+		if l.prevMemWindow > 0 {
+			i := l.prevMemIdx
+			for dist := 1; dist <= l.prevMemWindow; dist++ {
+				if i--; i < 0 {
+					i = l.prevMemWindow - 1
+				}
+				if len(l.prevMem[i]) == len(mem) && bytes.Equal(l.prevMem[i], mem) {
+					foundEq = true
+					log.Meq = new(int)
+					*log.Meq = dist
+					log.Memory = nil
+					break
+				}
+			}
+			if l.prevMemIdx++; l.prevMemIdx == l.prevMemWindow {
+				l.prevMemIdx = 0
+			}
+			if foundEq {
+				l.prevMem[l.prevMemIdx] = l.prevMem[i]
+			} else {
+				l.prevMem[l.prevMemIdx] = make([]byte, len(mem))
+				copy(l.prevMem[l.prevMemIdx], mem)
+			}
+		}
 	}
 	if !l.cfg.DisableStack {
 		log.Stack = scope.StackData()
